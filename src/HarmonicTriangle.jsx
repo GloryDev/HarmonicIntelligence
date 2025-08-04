@@ -39,6 +39,7 @@ const HarmonicTriangle = () => {
   const [activeUsers, setActiveUsers] = useState(0);
   const [debugInfo, setDebugInfo] = useState("");
   const [errorMessages, setErrorMessages] = useState([]);
+  const [lastUpdateTime, setLastUpdateTime] = useState(null);
 
   useEffect(() => {
     // Check if Supabase is properly configured
@@ -49,14 +50,15 @@ const HarmonicTriangle = () => {
       return;
     }
 
+    // Initial fetch
     fetchMemory();
-    setupRealtimeSubscription();
-    setupPresenceChannel();
 
-    return () => {
-      // Cleanup subscriptions
-      supabase.removeAllChannels();
-    };
+    // Set up polling every 5 seconds
+    const interval = setInterval(() => {
+      fetchMemory();
+    }, 5000); // fetch every 5 seconds
+    
+    return () => clearInterval(interval);
   }, []);
 
   const addErrorMessage = (message) => {
@@ -74,7 +76,7 @@ const HarmonicTriangle = () => {
         .from("harmonic_memory")
         .select("*")
         .order("timestamp", { ascending: false })
-        .limit(5);
+        .limit(10);
 
       if (error) {
         console.error("Database error:", error);
@@ -86,6 +88,7 @@ const HarmonicTriangle = () => {
       if (data) {
         setMemoryDisplay(data);
         setApiStatus("connected");
+        setLastUpdateTime(new Date());
         setDebugInfo(`Loaded ${data.length} entries from database`);
       }
     } catch (error) {
@@ -93,97 +96,6 @@ const HarmonicTriangle = () => {
       setApiStatus("error");
       setDebugInfo(`Connection failed: ${error.message}`);
       addErrorMessage(`❌ Connection failed: ${error.message}`);
-    }
-  };
-
-  const setupRealtimeSubscription = () => {
-    try {
-      setDebugInfo("Setting up real-time subscription...");
-      const channel = supabase
-        .channel("harmonic-feed")
-        .on(
-          "postgres_changes",
-          { 
-            event: "INSERT", 
-            schema: "public", 
-            table: "harmonic_memory" 
-          },
-          (payload) => {
-            console.log("Real-time update received:", payload);
-            const newEntry = payload.new;
-            setMemoryDisplay(prev => [newEntry, ...prev.slice(0, 4)]);
-            setDebugInfo("Real-time update: New entry received");
-            
-            // Animate the triangle when new data arrives
-            setCoherenceScore(prev => {
-              const newScore = newEntry.score;
-              setTimeout(() => setCoherenceScore(newScore), 100);
-              return prev;
-            });
-          }
-        )
-        .on(
-          "postgres_changes",
-          { 
-            event: "DELETE", 
-            schema: "public", 
-            table: "harmonic_memory" 
-          },
-          () => {
-            fetchMemory(); // Refresh the list
-            setDebugInfo("Real-time update: Entry deleted");
-          }
-        )
-        .subscribe((status) => {
-          console.log("Subscription status:", status);
-          if (status === "SUBSCRIBED") {
-            setDebugInfo("Real-time subscription active");
-            addErrorMessage("✅ Real-time subscription active");
-          } else if (status === "CHANNEL_ERROR") {
-            setDebugInfo("Real-time subscription failed - using polling");
-            addErrorMessage("⚠️ Real-time subscription failed - using polling");
-          } else if (status === "TIMED_OUT") {
-            setDebugInfo("Real-time subscription timed out");
-            addErrorMessage("⏰ Real-time subscription timed out");
-          } else if (status === "CLOSED") {
-            setDebugInfo("Real-time subscription closed");
-            addErrorMessage("🔌 Real-time subscription closed");
-          }
-        });
-    } catch (error) {
-      console.error("Real-time setup error:", error);
-      setDebugInfo(`Real-time setup failed: ${error.message}`);
-      addErrorMessage(`❌ Real-time setup failed: ${error.message}`);
-    }
-  };
-
-  const setupPresenceChannel = () => {
-    try {
-      const presenceChannel = supabase.channel("harmonic-presence");
-      
-      presenceChannel
-        .on("presence", { event: "sync" }, () => {
-          const state = presenceChannel.presenceState();
-          const userCount = Object.keys(state).length;
-          setActiveUsers(userCount);
-        })
-        .on("presence", { event: "join" }, ({ key, newPresences }) => {
-          setActiveUsers(prev => prev + 1);
-        })
-        .on("presence", { event: "leave" }, ({ key, leftPresences }) => {
-          setActiveUsers(prev => Math.max(0, prev - 1));
-        })
-        .subscribe(async (status) => {
-          if (status === "SUBSCRIBED") {
-            await presenceChannel.track({ 
-              user_id: `user_${Date.now()}`,
-              online_at: new Date().toISOString()
-            });
-          }
-        });
-    } catch (error) {
-      console.error("Presence setup error:", error);
-      addErrorMessage(`❌ Presence setup error: ${error.message}`);
     }
   };
 
@@ -233,16 +145,20 @@ const HarmonicTriangle = () => {
         
         setDebugInfo("Successfully saved to database");
         addErrorMessage("✅ Successfully saved to database");
-        // The real-time subscription will handle updating the display
+        
+        // Add to local state immediately for better UX
+        setMemoryDisplay(prev => [entry, ...prev.slice(0, 9)]);
+        setLastUpdateTime(new Date());
+        
       } catch (error) {
         console.log("Failed to save to Supabase, using local state");
         setDebugInfo(`Save failed: ${error.message}`);
         addErrorMessage(`❌ Save failed: ${error.message}`);
-        setMemoryDisplay(prev => [entry, ...prev.slice(0, 4)]);
+        setMemoryDisplay(prev => [entry, ...prev.slice(0, 9)]);
       }
     } else {
       // Use local state only
-      setMemoryDisplay(prev => [entry, ...prev.slice(0, 4)]);
+      setMemoryDisplay(prev => [entry, ...prev.slice(0, 9)]);
       setDebugInfo("Saved to local state only");
       addErrorMessage("💾 Saved to local state only");
     }
@@ -297,9 +213,9 @@ const HarmonicTriangle = () => {
           </div>
         )}
         
-        {apiStatus === "connected" && activeUsers > 0 && (
+        {apiStatus === "connected" && (
           <div className="text-blue-400 text-sm">
-            🌍 {activeUsers} user{activeUsers !== 1 ? 's' : ''} connected to the resonance field
+            🔄 Polling every 5 seconds | Last update: {lastUpdateTime ? lastUpdateTime.toLocaleTimeString() : 'Never'}
           </div>
         )}
       </div>
@@ -365,7 +281,7 @@ const HarmonicTriangle = () => {
 
       {memoryDisplay.length > 0 && (
         <div className="mt-8 w-full max-w-4xl">
-          <h3 className="text-xl font-medium mb-4">Shared Harmonic Memory</h3>
+          <h3 className="text-xl font-medium mb-4">Shared Harmonic Memory ({memoryDisplay.length} entries)</h3>
           <div className="space-y-2">
             {memoryDisplay.map((entry, index) => (
               <motion.div 
