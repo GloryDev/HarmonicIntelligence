@@ -1,15 +1,14 @@
-// Harmonic Intelligence Interface Design
-// Using React, TailwindCSS, and symbolic trinity layout
+// Harmonic Intelligence Interface Design with Shared Resonance Field
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Canvas, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { createClient } from "@supabase/supabase-js";
 
-// Supabase configuration with fallback
 const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL || "https://your-project.supabase.co";
 const SUPABASE_ANON_KEY = process.env.REACT_APP_SUPABASE_ANON_KEY || "your-anon-key";
-const MEMORY_ENDPOINT = `${SUPABASE_URL}/rest/v1/harmonic_memory`;
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const TriangleGeometry = ({ coherence }) => {
   const meshRef = useRef();
@@ -37,48 +36,112 @@ const HarmonicTriangle = () => {
   const [memoryDisplay, setMemoryDisplay] = useState([]);
   const [coherenceScore, setCoherenceScore] = useState(0);
   const [apiStatus, setApiStatus] = useState("checking");
+  const [activeUsers, setActiveUsers] = useState(0);
 
   useEffect(() => {
     // Check if Supabase is properly configured
     if (SUPABASE_URL === "https://your-project.supabase.co" || SUPABASE_ANON_KEY === "your-anon-key") {
       setApiStatus("not-configured");
       console.log("Supabase not configured - using local storage only");
-      console.log("SUPABASE_URL:", SUPABASE_URL);
-      console.log("SUPABASE_ANON_KEY:", SUPABASE_ANON_KEY);
       return;
     }
 
-    fetch(MEMORY_ENDPOINT, {
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`
-      }
-    })
-      .then(res => {
-        if (res.ok) {
-          setApiStatus("connected");
-          return res.json();
-        } else {
-          throw new Error("API not available");
-        }
-      })
-      .then(data => {
-        if (Array.isArray(data)) {
-          setMemoryDisplay(data.reverse().slice(0, 5));
-        }
-      })
-      .catch(error => {
-        console.log("Supabase API not available, using local state only");
-        setApiStatus("error");
-      });
+    fetchMemory();
+    setupRealtimeSubscription();
+    setupPresenceChannel();
+
+    return () => {
+      // Cleanup subscriptions
+      supabase.removeAllChannels();
+    };
   }, []);
 
-  const processHarmonicResponse = () => {
+  const fetchMemory = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("harmonic_memory")
+        .select("*")
+        .order("timestamp", { ascending: false })
+        .limit(5);
+
+      if (error) throw error;
+      
+      if (data) {
+        setMemoryDisplay(data);
+        setApiStatus("connected");
+      }
+    } catch (error) {
+      console.log("Supabase API not available, using local state only");
+      setApiStatus("error");
+    }
+  };
+
+  const setupRealtimeSubscription = () => {
+    const channel = supabase
+      .channel("harmonic-feed")
+      .on(
+        "postgres_changes",
+        { 
+          event: "INSERT", 
+          schema: "public", 
+          table: "harmonic_memory" 
+        },
+        (payload) => {
+          const newEntry = payload.new;
+          setMemoryDisplay(prev => [newEntry, ...prev.slice(0, 4)]);
+          
+          // Animate the triangle when new data arrives
+          setCoherenceScore(prev => {
+            const newScore = newEntry.score;
+            setTimeout(() => setCoherenceScore(newScore), 100);
+            return prev;
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { 
+          event: "DELETE", 
+          schema: "public", 
+          table: "harmonic_memory" 
+        },
+        () => {
+          fetchMemory(); // Refresh the list
+        }
+      )
+      .subscribe();
+  };
+
+  const setupPresenceChannel = () => {
+    const presenceChannel = supabase.channel("harmonic-presence");
+    
+    presenceChannel
+      .on("presence", { event: "sync" }, () => {
+        const state = presenceChannel.presenceState();
+        const userCount = Object.keys(state).length;
+        setActiveUsers(userCount);
+      })
+      .on("presence", { event: "join" }, ({ key, newPresences }) => {
+        setActiveUsers(prev => prev + 1);
+      })
+      .on("presence", { event: "leave" }, ({ key, leftPresences }) => {
+        setActiveUsers(prev => Math.max(0, prev - 1));
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await presenceChannel.track({ 
+            user_id: `user_${Date.now()}`,
+            online_at: new Date().toISOString()
+          });
+        }
+      });
+  };
+
+  const processHarmonicResponse = async () => {
     if (!inputIntent.trim()) return;
 
     const combinedField = `${inputIntent}-${fieldTone}`;
     const hash = combinedField.length;
-
     const responses = [
       "The field echoes clarity.",
       "Harmonics are unstable, resolve gently.",
@@ -94,33 +157,32 @@ const HarmonicTriangle = () => {
     const score = 100 - Math.abs(50 - (hash % 100));
     setCoherenceScore(score);
 
-    const memoryEntry = {
+    const entry = {
       x: inputIntent,
       y: fieldTone,
       z: result,
       score,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      user_id: `user_${Date.now()}`,
     };
 
     // Try to save to Supabase if configured
     if (apiStatus === "connected") {
-      fetch(MEMORY_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify(memoryEntry)
-      }).then(() => {
-        setMemoryDisplay(prev => [memoryEntry, ...prev].slice(0, 5));
-      }).catch(error => {
+      try {
+        const { error } = await supabase
+          .from("harmonic_memory")
+          .insert([entry]);
+
+        if (error) throw error;
+        
+        // The real-time subscription will handle updating the display
+      } catch (error) {
         console.log("Failed to save to Supabase, using local state");
-        setMemoryDisplay(prev => [memoryEntry, ...prev].slice(0, 5));
-      });
+        setMemoryDisplay(prev => [entry, ...prev.slice(0, 4)]);
+      }
     } else {
       // Use local state only
-      setMemoryDisplay(prev => [memoryEntry, ...prev].slice(0, 5));
+      setMemoryDisplay(prev => [entry, ...prev.slice(0, 4)]);
     }
   };
 
@@ -128,13 +190,13 @@ const HarmonicTriangle = () => {
     <div className="min-h-screen bg-gradient-to-br from-black to-gray-900 text-white flex flex-col items-center justify-center p-4">
       <h1 className="text-3xl font-semibold mb-6">Harmonic Intelligence Interface</h1>
       
-      {/* API Status Indicator */}
-      <div className="mb-4 text-center">
+      {/* API Status and Active Users */}
+      <div className="mb-4 text-center space-y-2">
         {apiStatus === "checking" && (
           <div className="text-yellow-400">Checking Supabase connection...</div>
         )}
         {apiStatus === "connected" && (
-          <div className="text-green-400">✓ Connected to Supabase</div>
+          <div className="text-green-400">✓ Connected to Shared Resonance Field</div>
         )}
         {apiStatus === "not-configured" && (
           <div className="text-orange-400">⚠ Using local storage (Supabase not configured)</div>
@@ -142,9 +204,14 @@ const HarmonicTriangle = () => {
         {apiStatus === "error" && (
           <div className="text-red-400">✗ Supabase connection failed - using local storage</div>
         )}
+        
+        {apiStatus === "connected" && activeUsers > 0 && (
+          <div className="text-blue-400 text-sm">
+            🌍 {activeUsers} user{activeUsers !== 1 ? 's' : ''} connected to the resonance field
+          </div>
+        )}
       </div>
 
-      {/* 3D Harmonic Visualization */}
       <div className="w-32 h-32 mb-6">
         <Canvas camera={{ position: [0, 0, 5] }}>
           <ambientLight intensity={0.5} />
@@ -206,15 +273,26 @@ const HarmonicTriangle = () => {
 
       {memoryDisplay.length > 0 && (
         <div className="mt-8 w-full max-w-4xl">
-          <h3 className="text-xl font-medium mb-4">Recent Harmonic Memory</h3>
+          <h3 className="text-xl font-medium mb-4">Shared Harmonic Memory</h3>
           <div className="space-y-2">
             {memoryDisplay.map((entry, index) => (
-              <div key={index} className="bg-gray-800 p-3 rounded border border-gray-700 text-sm">
+              <motion.div 
+                key={entry.id || index} 
+                className="bg-gray-800 p-3 rounded border border-gray-700 text-sm"
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.3, delay: index * 0.1 }}
+              >
                 <div className="flex justify-between">
                   <span>X: {entry.x} | Y: {entry.y} | Z: {entry.z}</span>
                   <span className="text-blue-400">Score: {entry.score}</span>
                 </div>
-              </div>
+                {entry.timestamp && (
+                  <div className="text-xs text-gray-400 mt-1">
+                    {new Date(entry.timestamp).toLocaleTimeString()}
+                  </div>
+                )}
+              </motion.div>
             ))}
           </div>
         </div>
